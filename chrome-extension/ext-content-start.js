@@ -1,3 +1,4 @@
+/*
 try {
 	if (window.parent != window && window.location.href == window.parent.location.href) {
 		document.documentElement.innerHTML = '';
@@ -32,3 +33,4 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 });
 
 
+*/

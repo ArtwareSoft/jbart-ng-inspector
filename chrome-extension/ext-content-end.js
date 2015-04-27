@@ -1,3 +1,4 @@
+/*
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 	if (request == 'start') {
 		var xx = document.createElement("script"); 
@@ -50,3 +51,4 @@ function insertIFrame() {
 	document.close();	
 }
 
+*/
