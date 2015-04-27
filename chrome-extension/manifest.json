@@ -1,0 +1,39 @@
+{
+  "name": "angular inspector yaniv",
+  "short_name": "angular inspector (yaniv)",
+  "description": "angular inspector (yaniv)",
+  "manifest_version": 2,
+  "version": "1.2.3",
+  "author": "Yaniv",
+  "permissions": [
+    "storage",
+    "webRequest",
+    "webNavigation",
+    "*://*/*"
+  ],
+  "minimum_chrome_version": "10.0",
+  "devtools_page": "devtools.html",
+  "background": {
+    "scripts": ["ext-background.js"]
+  },
+
+  // "browser_action": {
+  //   "default_icon": { // optional
+  //     "19": "favicon.png", // optional
+  //     "38": "jb_64x64.png" // optional
+  //   },
+  //   "default_title": "jbart ng inspector" // optional; shown in tooltip
+  // },
+
+  "content_scripts": [{
+    "matches": ["*://www.wix.com/*"],
+    "js": ["ext-content-start.js"],
+    "run_at": "document_start",
+    "all_frames": true
+  }, {
+    "matches": ["*://www.wix.com/*"],
+    "js": ["ext-content-end.js"],
+    "run_at": "document_end",
+    "all_frames": false
+  }]
+}
