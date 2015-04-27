@@ -7,8 +7,7 @@
   "author": "Yaniv",
   "permissions": [
     "storage",
-    "webRequest",
-    "webNavigation",
+    "tabs",
     "*://*/*"
   ],
   "minimum_chrome_version": "10.0",
@@ -26,12 +25,12 @@
   // },
 
   "content_scripts": [{
-    "matches": ["*://www.wix.com/*"],
+    "matches": ["*://*/*"],
     "js": ["ext-content-start.js"],
     "run_at": "document_start",
     "all_frames": true
   }, {
-    "matches": ["*://www.wix.com/*"],
+    "matches": ["*://*/*"],
     "js": ["ext-content-end.js"],
     "run_at": "document_end",
     "all_frames": false

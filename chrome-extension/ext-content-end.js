@@ -1,5 +1,14 @@
+chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
+	if (request.type == 'mainHtml') {
+		chrome.storage.local.set({ 'jb-document-html': request.content })
+		chrome.storage.local.set({ 'jb-document-time': new Date().getTime() })
+
+		insertIFrame();
+	}
+});
 
 function onMainHtml(htmLines) {
+	debugger;
 	chrome.storage.local.set({ 'jb-document-html': htmLines.join('\n') })
 	chrome.storage.local.set({ 'jb-document-time': new Date().getTime() })
 

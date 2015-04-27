@@ -1,11 +1,13 @@
-if (window.parent != window && window.location.href == window.parent.location.href) {
-	document.documentElement.innerHTML = '';
-}
+try {
+	if (window.parent != window && window.location.href == window.parent.location.href) {
+		document.documentElement.innerHTML = '';
+	}
+} catch(e) {}
 
 chrome.storage.local.get(['jb-document-time','jb-document-html'],function(result) {
 	var time = result['jb-document-time'] || 0;
 	var html = result['jb-document-html'] || 0;
-	if (time && html) {
+	if (time && html && window.parent != window) {
 		var diff = new Date().getTime() - time;
 		if (diff < 10000) {	// less than one second
 			var htmlAfterAngular = '<script>';

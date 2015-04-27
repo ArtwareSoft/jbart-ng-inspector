@@ -1,3 +1,9 @@
+chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
+	if (request.type == 'mainHtml')
+		chrome.tabs.sendMessage(request.tabId,{ type: 'mainHtml', content: request.content },function() {});	
+});
+
+
 // chrome.browserAction.onClicked.addListener(function(tab) {
 //   chrome.tabs.sendMessage(tab.id,'click',function() {});
 //   chrome.webNavigation.onCompleted.addListener(function(a,b,c) {
