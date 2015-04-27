@@ -8,6 +8,7 @@
   "permissions": [
     "storage",
     "tabs",
+    "activeTab",
     "*://*/*"
   ],
   "minimum_chrome_version": "10.0",
@@ -16,13 +17,13 @@
     "scripts": ["ext-background.js"]
   },
 
-  // "browser_action": {
-  //   "default_icon": { // optional
-  //     "19": "favicon.png", // optional
-  //     "38": "jb_64x64.png" // optional
-  //   },
-  //   "default_title": "jbart ng inspector" // optional; shown in tooltip
-  // },
+  "browser_action": {
+    "default_icon": { // optional
+      "19": "favicon.png", // optional
+      "38": "jb_64x64.png" // optional
+    },
+    "default_title": "jbart ng inspector" // optional; shown in tooltip
+  },
 
   "content_scripts": [{
     "matches": ["*://*/*"],

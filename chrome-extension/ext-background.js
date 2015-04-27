@@ -4,11 +4,17 @@ chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
 });
 
 
-// chrome.browserAction.onClicked.addListener(function(tab) {
-//   chrome.tabs.sendMessage(tab.id,'click',function() {});
-//   chrome.webNavigation.onCompleted.addListener(function(a,b,c) {
-//   })
-// });
+chrome.browserAction.onClicked.addListener(function(tab) {
+	chrome.tabs.sendMessage(tab.id,'start',function() {});
+	// chrome.tabs.insertCSS(null,{ file: '//storage.googleapis.com/jbartlib/apps/jbart-ng-inspector/ng-inspector-code.js' },function(){})
+	// chrome.tabs.insertCSS(tab.id,{ file: '//storage.googleapis.com/jbartlib/apps/jbart-ng-inspector/ng-inspector-code.js' },function(){})
+	// chrome.tabs.insertCSS(tab.id,{ file: '//storage.googleapis.com/jbartlib/apps/jbart-ng-inspector/ng-inspector.css' },function(){})
+	// var code = 'var xx = document.createElement("script"); xx.src="//storage.googleapis.com/jbartlib/apps/jbart-ng-inspector/ng-inspector-code.js"; document.head.appendChild(xx); ';
+	// chrome.tabs.executeScript(tab.id,{ code: code },function(){})
+  // chrome.tabs.sendMessage(tab.id,'click',function() {});
+  // chrome.webNavigation.onCompleted.addListener(function(a,b,c) {
+  // })
+});
 
 
 // chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {
