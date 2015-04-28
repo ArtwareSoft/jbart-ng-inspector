@@ -1,0 +1,2 @@
+#jb-inspector-top { position: absolute; background: #E7E4E4; width: 190px; padding: 5px; height: 100px; top: 50px; z-index: 5000; left: 30px; border: 1px solid rgb(178, 171, 171); box-shadow: 1px 2px 2px #888888;}
+#jb-inspector-version { font-size: 14px; }

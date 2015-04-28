@@ -1,3 +1,22 @@
+function start(inLocalHost) {
+	setTimeout(function() {
+		var baseDir = inLocalHost ? 'http://locahost:8081/jbart-ng-inspector/' : '//storage.googleapis.com/jbartlib/apps/jbart-ng-inspector/'; 
+
+		var xx = document.createElement("script"); 
+		xx.src=baseDir+"ng-inspector-code.js?" + new Date().getTime();
+		document.head.appendChild(xx);
+
+		var xx2 = document.createElement("link"); 
+		xx2.setAttribute('href',baseDir+'ng-inspector.css?' + new Date().getTime()); 
+		xx2.setAttribute('rel',"stylesheet");
+		xx2.setAttribute('type',"text/css");
+
+		document.head.appendChild(xx2);
+	},100);
+}
+
+
+
 /*
 try {
 	if (window.parent != window && window.location.href == window.parent.location.href) {
