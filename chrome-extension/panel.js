@@ -10,7 +10,7 @@ function start(inLocalHost) {
 			var baseDir = inLocalHost ? 'http://localhost:8081/jbart/jbart-ng-inspector/' : '//storage.googleapis.com/jbartlib/apps/jbart-ng-inspector/'; 
 			var htmlAfterAngular = '<script src="'+baseDir+'ng-inspector-interception.js?'+new Date().getTime()+'"></script>';
 
-			content = content.replace(/(<script src="[^"]*angular.min.js"><\/script>)/g,'$1'+htmlAfterAngular);
+			content = content.replace(/(<script src="[^"]*angular([.]min)?.js"><\/script>)/g,'$1'+htmlAfterAngular);
 
 			var js_encoded = '[' + content.split('\n').map(function(line) { return "'" + line.replace(/\\/g,'\\\\').replace(/\n/g,'').replace(/'/g,"\\'") + "'" } ).join(',\n  ') + ']';
 
