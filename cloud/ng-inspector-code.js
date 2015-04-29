@@ -1,4 +1,5 @@
 (function() {
+	var $;
 
 	showMainWindow();
 
@@ -6,16 +7,34 @@
 		if (document.readyState == 'loading')
 			return setTimeout(showMainWindow,1000);
 
-		var div = document.createElement('div');
-		div.setAttribute('id','jb-inspector-top');
+		$ = angular.element;
+		$('body').append("<div id='jb-inspector-top' />");
 
-		document.body.appendChild(div);
+		openStudioPopupWindow({ 
+			title: 'jbart inspector',
+			content: $('<div/>').attr('id','jb-inspector-version').text('angular version = ' + window.angular.version.full)
+		})
+	}
 
 
-		var div2 = document.createElement('div');
-		div2.setAttribute('id','jb-inspector-version');
-		div2.innerHTML = 'angular version = ' + window.angular.version.full;
-		div.appendChild(div2);
+	// options include: title, content
+	function openStudioPopupWindow(options) {
+		var frame = $('<div class="jbart-window-frame" />');
+		$('<div class="jbart-window-title" />').text(options.title).appendTo(frame);
+		var closeBtn = $('<button class="jbart-window-close" />').appendTo(frame);
+		$('<div class="jbart-window-content" />').append(options.content).appendTo(frame);
+
+		closeBtn.click(function() {
+			frame.remove();
+		})
+		studioPopupWindowAddDrag(frame);
+
+		$('#jb-inspector-top').append(frame[0]);
+
+		return frame;
+	}
+
+	function studioPopupWindowAddDrag(frame) {
 
 	}
 }());
