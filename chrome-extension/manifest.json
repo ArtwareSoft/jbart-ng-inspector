@@ -1,7 +1,7 @@
 {
-  "name": "angular inspector yaniv",
-  "short_name": "angular inspector (yaniv)",
-  "description": "angular inspector (yaniv)",
+  "name": "jbart angular inspector",
+  "short_name": "jbart angular inspector",
+  "description": "jbart angular inspector",
   "manifest_version": 2,
   "version": "1.2.3",
   "author": "Yaniv",

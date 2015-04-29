@@ -16,7 +16,7 @@ function start(inLocalHost) {
 			code += 'document.close();\n';
 
 			code += 'setTimeout(function() {\n';
-			code += '  var e1 = document.createElement("script"); e1.src="'+baseDir+'ng-inspector-code.js?" + new Date().getTime();document.head.appendChild(e1);';
+			code += '  var e1 = document.createElement("script"); e1.setAttribute("charset","UTF-8"); e1.src="'+baseDir+'ng-inspector-code.js?" + new Date().getTime();document.head.appendChild(e1);';
 			code += '  var e2 = document.createElement("link"); e2.rel="stylesheet"; e2.href="'+baseDir+'ng-inspector.css?" + new Date().getTime();document.head.appendChild(e2);';
 			code += '},1000);\n';
 

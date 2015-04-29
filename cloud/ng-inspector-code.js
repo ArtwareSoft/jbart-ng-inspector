@@ -21,7 +21,7 @@
 	function openStudioPopupWindow(options) {
 		var frame = $('<div class="jbart-window-frame" />');
 		$('<div class="jbart-window-title" />').text(options.title).appendTo(frame);
-		var closeBtn = $('<button class="jbart-window-close" />').appendTo(frame);
+		var closeBtn = $('<button class="jbart-window-close" />').text('×').appendTo(frame);
 		$('<div class="jbart-window-content" />').append(options.content).appendTo(frame);
 
 		closeBtn.click(function() {
