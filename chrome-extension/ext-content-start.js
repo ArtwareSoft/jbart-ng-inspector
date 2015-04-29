@@ -1,3 +1,4 @@
+/*
 function start(inLocalHost) {
 	setTimeout(function() {
 		var baseDir = inLocalHost ? 'http://locahost:8081/jbart-ng-inspector/' : '//storage.googleapis.com/jbartlib/apps/jbart-ng-inspector/'; 
@@ -15,9 +16,6 @@ function start(inLocalHost) {
 	},100);
 }
 
-
-
-/*
 try {
 	if (window.parent != window && window.location.href == window.parent.location.href) {
 		document.documentElement.innerHTML = '';

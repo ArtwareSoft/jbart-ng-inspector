@@ -1,5 +1,5 @@
 #jb-inspector-top {}
-.jbart-window-frame { position: absolute;
+.jbart-window-frame { position: fixed;
   top: 40px;
   left: 40px;
   background: #F9F9F9;
@@ -32,4 +32,4 @@
   font-weight: 700;
   opacity: .2;
 }
-#jb-inspector-version { font-size: 14px; }
+#jb-inspector-version { font-size: 14px; padding:5px;}
