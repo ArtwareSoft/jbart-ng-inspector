@@ -5034,8 +5034,11 @@ CodeMirror.registerHelper("hint", "jbart5", function(cm, options) {
 function jb_openStudioPopupWindow(options) {
 	if (!$('#jb-inspector-top')[0]) {
 		var top = $('<div id="jb-inspector-top" />').appendTo('body');
-		debugger;
-		angular.bootstrap(top[0],['jbart-studio-app']);
+		if (!jbart.studio.$compile) {
+//			angular.injector().invoke([])
+			// we need to init jbart-studio-app
+		}
+//		angular.bootstrap(top[0],['jbart-studio-app']);
 	}
 
 	var frame = $('<div class="jbart-window-frame" />');
