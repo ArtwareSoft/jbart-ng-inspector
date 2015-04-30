@@ -47,15 +47,11 @@
 		$provide.decorator("$templateCache",function($delegate) {
 			return { 
 				put:function(k,v) {
-					// if (!window.parent.jbNgTemplateDB[k] || !window.parent.jbNgTemplateDB[k].updated)
-					// 	v = window.parent.jbNgAddToTemplateDB(k,v);
-					window.jbInspect.templates[k] = v;
-					return $delegate.put(k,v);
+					return jbn_putTemplateToCache(k,v,window.jbInspect.templates,$delegate);
 				},
 				info: $delegate.info,				
 				get:function(k) {
-					return $delegate.get(k);
-					// return (window.parent.jbNgTemplateDB[k] && window.parent.jbNgTemplateDB[k].str) || $delegate.get(k);
+					return jbn_getTemplateFromCache(k,window.jbInspect.templates,$delegate);
 				},
 				remove:function(k) { return $delegate.remove(k); }
 			}
@@ -7785,7 +7781,7 @@ jb_component('ng-studio.updateTemplate',{
 		code: { as: 'string'}
 	},
 	impl: function(context,template,code) {
-		window.jbNgAddToTemplateDB(template,code,true);
+		window.jbNgAddToTemplateDB(template,code,null,true);
 
 		jb_ngStudioRefreshPreview(context);
 	}
@@ -7803,7 +7799,7 @@ jb_component('ng-studio.updateTemplateElement',{
 		var templateID = jb_findTemplateIdOfTemplateElem(templateElem);
 		$(templateElem).replaceWith(newTemplate);
 		var html = window.jbNgTemplateDB[templateID].$elem.get().map(function(e) { return e.outerHTML;}).join('\n');
-		window.jbNgAddToTemplateDB(templateID,html,true);
+		window.jbNgAddToTemplateDB(templateID,html,null,true);
 
 		jb_ngStudioRefreshPreview(context);
 	}
@@ -7883,32 +7879,12 @@ jb_component('studio-ng.highlightTemplateInPreview', {
 });
 
 
-window.jbNgAddToTemplateDB = function(name,valueAsStr,updatedFromStudio) {
-	try {
-		window.jbId = window.jbId || 0;
-		if (Array.isArray(valueAsStr)) { valueAsStr = valueAsStr[1]; }		// xhr (used both in wix and hikeio)
+window.jbNgAddToTemplateDB = function(name,valueAsStr,$delegate,updatedFromStudio) {
+	return jbn_putTemplateToCache(name,valueAsStr,window.jbNgTemplateDB,$delegate,updatedFromStudio);
+}
 
-		if (typeof valueAsStr != 'string') return valueAsStr;	// could be a promise object (hikeio)
-
-		var original = valueAsStr;
-
-		var $elem = $(valueAsStr);
-		if (!valueAsStr.match(/\s_jb="/)) {
-			$elem.findIncludeSelf('*').each(function() { 
-				if (this.setAttribute) 
-					this.setAttribute('_jb',window.jbId++)
-			});
-			valueAsStr = $elem.get().map(function(e) { return e.outerHTML; }).join('');
-		}
-
-		window.jbNgTemplateDB[name] = { str: valueAsStr, $elem: $elem, original: original };
-
-		if (updatedFromStudio) window.jbNgTemplateDB[name].updated = true;
-
-		return valueAsStr;
-	} catch(e) {
-		console.log(e);
-	}
+window.jbNgGetFromTemplateDB = function(name,$delegate) {
+	return jbn_getTemplateFromCache(name,window.jbNgTemplateDB,$delegate);
 }
 
 function jbn_inspectData() {
@@ -7937,7 +7913,42 @@ function jb_getHtmlImport(href, query) {
 	return '<ng-include src="\''+href+'\'" />';
 }
 
+function jbn_putTemplateToCache(name,value,dbObject,$delegate,updatedFromStudio) {
+	try {
+		jbart.ngIDCounter = jbart.ngIDCounter || 1;
+		var valueAsStr = Array.isArray(value) ? value[1] : value; // xhr (used both in wix and hikeio)
 
+		if (typeof valueAsStr != 'string') return $delegate.put(name,valueAsStr);	// could be a promise object (hikeio)
+
+		if (dbObject[name] && dbObject[name].updated && !updatedFromStudio)
+			return dbObject[name].value;
+
+		var $elem = window.jQuery ? window.jQuery(valueAsStr) : angular.element(valueAsStr);
+		if (!$elem.__proto__.get)
+			$elem.__proto__.get = function() { var out=[]; for(var i=0;i<this.length;i++) out.push(this[i]); return out; }
+
+		if (!valueAsStr.match(/\s_jb="/)) {
+			[$elem[0]].concat($elem.find('*').get()).forEach(function(elem) { 
+				if (elem.setAttribute) elem.setAttribute('_jb',jbart.ngIDCounter++)
+			});
+			valueAsStr = $elem.get().map(function(e) { return e.outerHTML; }).join('');
+		}
+
+		dbObject[name] = { value: valueAsStr, $elem: $elem, original: value };
+		if (updatedFromStudio) dbObject[name].updated = true;
+
+		return valueAsStr;
+	} catch(e) {
+		console.log(e);
+	}
+
+	dbObject[name] = value;
+	return $delegate.put(name,value);
+}
+
+function jbn_getTemplateFromCache(name,dbObject,$delegate) {
+	return (dbObject[name] && dbObject[name].value) || $delegate.get(name);
+}
 function jbn_openStudioMainWindow() {
 	jb_openStudioPopupWindow({
 		title: 'jbart ng inspector',
@@ -8095,7 +8106,8 @@ jb_component('studio.angularPreviewIframe',{
 		var iframe = $('<iframe frameborder="0" />');
 		iframe.attr('src','about:blank').appendTo($wrapper);
 
-		var moduleBaseUrl = 'http://storage.googleapis.com/jbartlib/apps/angular-inspector/';
+//		var moduleBaseUrl = 'http://storage.googleapis.com/jbartlib/apps/angular-inspector/';
+		var moduleBaseUrl = 'http://localhost:8081/jbart/ng-studio/';
 		var moduleScript = '<script src="'+moduleBaseUrl+'ng-jbart-module.js"></script>'
 
 		$.ajax(jb_ngStudioCrossdomainAjaxOptions(projectInfo.previewUrl,projectInfo.cookie)).then(function(htmlContent) {
@@ -8467,7 +8479,7 @@ jb_component("ng-studio.templateAsString", {
 	type: 'data',
 	params: { template: { as: 'single'} },
 	impl: function(context,template) {
-		return window.jbNgTemplateDB[template].str.replace(/[\s]_jb=".*"/g,'');
+		return window.jbNgTemplateDB[template].value.replace(/[\s]_jb=".*"/g,'');
 	}
 });
 
@@ -8475,8 +8487,10 @@ function jb_angularElemToTemplate(elem) {
 	var jbid = elem.getAttribute('_jb');
 	if (!jbid) return;
 	for(var templateName in window.jbNgTemplateDB) {
-		var found = jbNgTemplateDB[templateName].$elem.findIncludeSelf("[_jb='"+jbid+"']")[0];
+		var $elem = jbNgTemplateDB[templateName].$elem;
+		var found = $elem.find("[_jb='"+jbid+"']")[0];
 		if (found) return found;
+		if ($elem[0] && $elem[0].getAttribute('_jb') == jbid) return $elem[0];
 	}
 }
 
@@ -9307,6 +9321,122 @@ angular.module('jbartIntercept').run(['$templateCache', function($templateCache)
     "<div>\r" +
     "\n" +
     "\t<button class=\"jbart-toolbar-button jbart-show-templates\">templates</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search />\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\">Templates</button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\">Select</button>\r" +
     "\n" +
     "</div>"
   );

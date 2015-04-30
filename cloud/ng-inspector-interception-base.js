@@ -12,15 +12,11 @@
 		$provide.decorator("$templateCache",function($delegate) {
 			return { 
 				put:function(k,v) {
-					// if (!window.parent.jbNgTemplateDB[k] || !window.parent.jbNgTemplateDB[k].updated)
-					// 	v = window.parent.jbNgAddToTemplateDB(k,v);
-					window.jbInspect.templates[k] = v;
-					return $delegate.put(k,v);
+					return jbn_putTemplateToCache(k,v,window.jbInspect.templates,$delegate);
 				},
 				info: $delegate.info,				
 				get:function(k) {
-					return $delegate.get(k);
-					// return (window.parent.jbNgTemplateDB[k] && window.parent.jbNgTemplateDB[k].str) || $delegate.get(k);
+					return jbn_getTemplateFromCache(k,window.jbInspect.templates,$delegate);
 				},
 				remove:function(k) { return $delegate.remove(k); }
 			}
