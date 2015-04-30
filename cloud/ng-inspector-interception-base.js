@@ -4,6 +4,8 @@
 	window.jbInspect.templates = window.jbInspect.templates || {};
 
 	angular.module('jbartIntercept',['ng']).run(function($rootScope,$compile, $parse,$templateCache) {
+		jbart.studio = jbart.studio || {};
+		angular.extend(jbart.studio, {$rootScope: $rootScope, $compile: $compile, $parse: $parse, $templateCache: $templateCache });
 //		window.jbInspect.services = {$rootScope: $rootScope, $compile: $compile, $parse: $parse, $templateCache: $templateCache };
 	})
 	.config(function($provide) {

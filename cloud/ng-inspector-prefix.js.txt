@@ -9,13 +9,16 @@
 
 	document.addEventListener("DOMContentLoaded",function() {
 		jbn_initJQuery(function() {
-			setTimeout(jbn_openStudioMainWindow,100)
+			// todo: fix in cloud
+			$('head').append( $('<link rel="stylesheet" type="text/css" />').attr('href', 'http://localhost:8081/jbart/jbart-ng-inspector/jbart-ng-inspector.css') );
+			
+			setTimeout(jbn_openStudioMainWindow,100);
 		});
 	},false);
 
 	function jbn_initJQuery(callback) {
-		if (window.$) return callback;
-		var el = document.createElement('script'); el.src = 'https://ajax.googleapis.com/ajax/libs/jquery/1.8.3/jquery.min.js'; document.head.appendChild(el);
+		if (window.$) return callback();
+		var el = document.createElement('script'); el.src = '//ajax.googleapis.com/ajax/libs/jquery/1.8.3/jquery.min.js'; document.head.appendChild(el);
 
 		doCheckForJQueryLoaded();
 
