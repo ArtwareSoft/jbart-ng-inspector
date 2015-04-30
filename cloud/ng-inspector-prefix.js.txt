@@ -1,0 +1,31 @@
+(function() {
+	if (window.jbInterceptionLoaded) return;
+	window.jbInterceptionLoaded = true;
+
+	window.jbart = window.jbart || { comps: {} };
+	jbart.comps = jbart.comps || {};
+	jbart.studio = jbart.studio || {};
+	window.jbart_widgets = {};
+
+	document.addEventListener("DOMContentLoaded",function() {
+		jbn_initJQuery(function() {
+			setTimeout(jbn_openStudioMainWindow,100)
+		});
+	},false);
+
+	function jbn_initJQuery(callback) {
+		if (window.$) return callback;
+		var el = document.createElement('script'); el.src = 'https://ajax.googleapis.com/ajax/libs/jquery/1.8.3/jquery.min.js'; document.head.appendChild(el);
+
+		doCheckForJQueryLoaded();
+
+		function doCheckForJQueryLoaded() {
+			if (window.$) 
+				callback();
+			else
+				setTimeout(doCheckForJQueryLoaded,100);
+		}		
+		
+	}
+
+

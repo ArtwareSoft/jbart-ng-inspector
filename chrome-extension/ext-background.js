@@ -17,8 +17,11 @@ var tabIdsToMonitor = {};
 
 chrome.webRequest.onBeforeRequest.addListener(function(details) {
 	if (details.url.match(/\/angular\.js$/) || details.url.match(/\/angular\.min\.js$/))
-		if (details.url.indexOf('fromjbart') == -1 && tabIdsToMonitor[details.tabId])
-	  		return { redirectUrl: 'http://jbartdb.appspot.com/jbart-angular.js?ver=' + tabIdsToMonitor[details.tabId].version }
+		if (details.url.indexOf('fromjbart') == -1 && tabIdsToMonitor[details.tabId]) {
+            var url = 'http://jbartdb.appspot.com/jbart-angular.js?ver=' + tabIdsToMonitor[details.tabId].version;
+            if (tabIdsToMonitor[details.tabId].inLocalHost) url += '&local=true';
+	  		return { redirectUrl: url }
+        }
 },{ urls: ['*://*/*'] },["blocking"]);
 
 chrome.runtime.onMessage.addListener(function(request, sender, sendResponse) {

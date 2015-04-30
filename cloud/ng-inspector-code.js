@@ -11,7 +11,6 @@
 		$ = angular.element;
 		$(document.body).append("<div id='jb-inspector-top' />");
 
-		debugger;
 		var $cmWrapper = $('<div/>');
 		openStudioPopupWindow({ 
 			title: 'jbart inspector',
@@ -41,16 +40,17 @@
 	// options include: title, content
 	function openStudioPopupWindow(options) {
 		var frame = $('<div class="jbart-window-frame" />');
-		$('<div class="jbart-window-title" />').text(options.title).appendTo(frame);
-		var closeBtn = $('<button class="jbart-window-close" />').text('×').appendTo(frame);
-		$('<div class="jbart-window-content" />').append(options.content).appendTo(frame);
+		frame.append($('<div class="jbart-window-title" />').text(options.title));
+		var closeBtn = $('<button class="jbart-window-close" />').text('×');
+		frame.append(closeBtn);
+		frame.append($('<div class="jbart-window-content" />').append(options.content));
 
-		closeBtn.click(function() {
+		closeBtn.on('click',function() {
 			frame.remove();
 		})
 		studioPopupWindowDragTitle(frame);
 
-		$('#jb-inspector-top').append(frame[0]);
+		$(document.querySelector('#jb-inspector-top')).append(frame[0]);
 
 		return frame;
 	}

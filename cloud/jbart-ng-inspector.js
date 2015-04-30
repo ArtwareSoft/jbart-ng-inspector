@@ -60,7 +60,7 @@
 
 
 	var prevFunc = angular.module;
-	angular.module2 = function(name,requires,configFN) {
+	angular.module = function(name,requires,configFN) {
 		window.jbInspect.modules[name] = {};
 //		console.log('module loaded - ' + name);
 		 if (requires && name.indexOf('ng') != 0 && name != 'jbart-studio-app')		
@@ -7924,7 +7924,6 @@ function jbn_studioHtmlElem(htmlName,controllerOrProps,parent) {
 }
 
 function jb_getHtmlImport(href, query) {
-	debugger;
 	var html = jbart.studio.$templateCache.get(href);
 	if (html && Array.isArray(html)) html = html[1]; // XHR
 	if (html) return html;
