@@ -20,7 +20,7 @@ chrome.pageAction.onClicked.addListener(function(tab) {
       chrome.tabs.executeScript(tab.id,{ code: code });
       checkVersion(tab.id);
   } else {
-    var basicCode = 'jbn_openStudioMainWindow()';
+    var basicCode = 'jbn_toolbarClick()';
     var code = 'var xx = document.createElement("script");  xx.innerHTML = "' + basicCode + '"; document.head.appendChild(xx);';
     chrome.tabs.executeScript(tab.id,{ code: code },function(){})
   }
