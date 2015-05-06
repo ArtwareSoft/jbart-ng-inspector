@@ -1,0 +1,36 @@
+{
+  "name": "jbart angular inspector",
+  "short_name": "jbart angular inspector",
+  "description": "jbart angular inspector",
+  "manifest_version": 2,
+  "version": "1.2.3",
+  "author": "Yaniv",
+  "icons": {
+    "16": "jbart_16.png",
+    "128": "jbart_128.png"
+  },
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "storage",
+    "tabs",
+    "activeTab",
+    "*://*/*"
+  ],
+  "minimum_chrome_version": "10.0",
+  "devtools_page": "devtools.html",
+  "background": {
+    "scripts": ["ext-background.js"]
+  },
+  "content_scripts": [{
+    "matches": ["*://*/*"],
+    "js": ["ext-content-start.js"],
+    "run_at": "document_start",
+    "all_frames": false
+  }, {
+    "matches": ["*://*/*"],
+    "js": ["ext-content-end.js"],
+    "run_at": "document_end",
+    "all_frames": false
+  }]
+}

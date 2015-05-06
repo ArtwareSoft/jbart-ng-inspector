@@ -2,7 +2,7 @@ Angular Inspector
 ===
 Visual Editor for AngualrJS build with jBart technology.
 
-The chrome extension is in pre beta state, and you can install it [here](https://chrome.google.com/webstore/detail/jbart-angular-inspector/kgoafmcaiibfcofgdmondpdknpajpkbp/related).
+The chrome extension is in pre beta state, and you can install it [here](https://chrome.google.com/webstore/detail/jbart-angular-inspector/kgoafmcaiibfcofgdmondpdknpajpkbp).
 
 ### Start the Inspector:
 Click on the chrome address bar icon:
