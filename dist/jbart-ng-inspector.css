@@ -190,6 +190,7 @@ padding: 10px 10px 10px 27px; color: #6D6E71; min-height: 12px; border-bottom: 1
 .studio-floating-dialog>.dialog-close:hover { opacity: .5; }
 
 .studio-floating-dialog .CodeMirror { width: 550px; font-size: 12px;}
+.studio-floating-dialog .CodeMirror * { font-size: 12px;}
 
 
 
@@ -369,14 +370,14 @@ border: 1px solid rgb(213, 213, 213);}
 .CodeMirror-hints { z-index: 200 !important; }
 
 /* .studio-control-tree */
-.studio-control-tree { margin: 0; padding: 7px; max-height: 400px; overflow: auto;}
+.studio-control-tree { margin: 0; padding: 7px; max-height: 260px; overflow: auto;}
 .studio-control-tree:focus { outline: none; }
 .studio-control-tree .treenode-children { margin: 0; padding: 1px 0 3px 10px; }
 
 .studio-control-tree .treenode { list-style: none; padding: 1px 0;}
-.studio-control-tree .treenode-line { display: -webkit-box; -webkit-box-orient: horizontal; }
+.studio-control-tree .treenode-line { display: -webkit-box; -webkit-box-orient: horizontal; width:100px;  }
 .studio-control-tree .treenode-label { color: #3D443D; font-size: 12px; vertical-align: top; height: 15px; -webkit-user-select: none; padding: 1px 2px 0 1px; /* display: inline-block; */ max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;}
-.studio-control-tree .treenode-icon { width: 16px; height:14px; display: inline-block;  background: url('studio5-icons.png?v=16_02') no-repeat; margin-right: 2px; vertical-align: top;}
+.studio-control-tree .treenode-icon { width: 16px; height:14px; display: inline-block;  background: url('studio5-icons.png?v=16_02') no-repeat; margin-right: 2px; vertical-align: top;   background-position: 0px -16px;}
 
 .studio-control-tree .treenode-expandbox { border: none; background: none; position: relative; width:9px;	height:9px;	padding: 0;	vertical-align: top;	margin-top: 3px;	margin-right: 3px;	cursor: pointer;}
 .studio-control-tree .treenode-expandbox div { position: absolute; }
@@ -566,7 +567,19 @@ background-position: -49px -16px; content: ''; }
 
 #jb-inspector-top .jbart-toolbar-button.jbart-select span { background-position: 0px 0px; }
 #jb-inspector-top .jbart-toolbar-button.jbart-show-templates span { background-position: -80px 0px; }
+#jb-inspector-top .jbart-toolbar-button.jbart-show-scope span { background-position: -176px 0px; }
 
 .CodeMirror-hints { z-index: 6000 !important; }
 
 .jb-hidden { display: none !important; }
+
+.scope-items-in-tree { list-style: none; padding: 0 10px; }
+.scope-items-in-tree>li { text-overflow: ellipsis;  max-width: 300px;  overflow: hidden;  white-space: nowrap;}
+.scope-items-in-tree>li>.expand-box { position: relative; width:9px; height:9px; display: inline-block; vertical-align: top;	margin-top: 3px;	margin-right: 6px;	cursor: pointer;}
+.scope-items-in-tree>li>.expand-box .frame { position: absolute; top:2px; left:2px; width:9px;	height:9px; background: #F8FFF9; border-radius: 3px; border: 1px solid #91B193; }
+.scope-items-in-tree>li>.expand-box .lrLine { position: absolute; background: #91B193; top: 7px; left: 5px; width: 5px; height: 1px; }
+.scope-items-in-tree>li>.expand-box .tbLine { position: absolute; background: #91B193; left: 7px; top: 5px; height: 5px; width: 1px; }
+.scope-items-in-tree>li>.name { color: #3D443D; font-size: 12px; }
+.scope-items-in-tree>li>.value { color: #949494; font-size: 12px; padding-left: 5px; }
+
+.jb-codemirror-resizer { background: url('resizer.gif') !important;}

@@ -25,6 +25,7 @@ chrome.pageAction.onClicked.addListener(function(tab) {
     var code = 'var xx = document.createElement("script");  xx.innerHTML = "' + basicCode + '"; document.head.appendChild(xx);';
     chrome.tabs.executeScript(tab.id,{ code: code },function(){})
   }
+  listenToSave(tab.id);
 
   function checkVersion() {
     var code = 'document.querySelector("#jbn-version") && document.querySelector("#jbn-version").innerHTML';
@@ -39,3 +40,38 @@ chrome.pageAction.onClicked.addListener(function(tab) {
   }
 
 });
+
+function listenToSave(tabId) {
+  var lastSaveId = null;
+  listen();
+
+  function listen() {
+    var code = 'document.querySelector("#jbn-save") && document.querySelector("#jbn-save").textContent';
+    chrome.tabs.executeScript(tabId,{ code: code }, function(saveContent) { 
+      if (saveContent[0]) {
+        var parts = saveContent[0].split("----JB-SEPARATOR----");
+        if (parts.length == 2) {
+          var prevValue = parts[0];
+          var value = parts[1];
+          chrome.tabs.executeScript(tabId,{ code: 'document.querySelector("#jbn-save").innerHTML=""' }, function() {
+            setTimeout(listen, 100);        
+          });
+          save(tabId,prevValue,value);
+          return;
+        }
+      }
+      setTimeout(listen, 100);
+    });
+  }
+}
+
+function save(tabId,find,replace) {
+  var saveAppId = "dlkihbhmbjajiadbkbgenjhnpdghlpom";
+  chrome.runtime.sendMessage(saveAppId, { op: 'save', tabId: tabId, find:find, replace:replace });
+}
+
+chrome.runtime.onMessageExternal.addListener(
+  function(request, sender, sendResponse) {
+    if (request && request.op == 'saved')
+      chrome.tabs.executeScript(request.tabId,{ code: 'alert("' + request.message + '")' });
+    });

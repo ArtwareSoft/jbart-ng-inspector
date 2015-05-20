@@ -1726,10 +1726,11 @@ jb_component('editableText.codemirror',{
 		cm_settings: { as: 'single' },
     resizer: { description: 'resizer id or true (id is used to keep size in session storage)' },
 		mode: { as: 'string' },
+    lineWrapping: { as: 'boolean'},
     onChange: { type:'action', dynamic:'true'},
     onLoad: { type:'action', dynamic:'true'}
 	},
-	impl: function(context,cm_settings,resizer,mode,onChange,onLoad) {
+	impl: function(context,cm_settings,resizer,mode,lineWrapping,onChange,onLoad) {
 		return {
 			html: '<textarea/>',
 			cssClass: "jb-codemirror",
@@ -1738,6 +1739,7 @@ jb_component('editableText.codemirror',{
         var resizer = typeof(context.profile.resizer) == 'string' ? { id: context.profile.resizer } : {};
         var settings = { cm_settings: cm_settings, resizer: resizer };
         if (mode) cm_settings.mode = mode;
+        if (lineWrapping) cm_settings.lineWrapping = lineWrapping;
         if (jb_profileHasValue(context,'onChange'))
           settings.onChange = function() { onChange() };
         var cm_editor = jb_codemirror(textbox,settings); 
@@ -4159,7 +4161,7 @@ function jb_codemirrorResizer(editor,cmElem, settings) {
 	}, settings);
 
 	$(cmElem).css('position', 'relative');
-	var $resizer = $('<div style="position:absolute;bottom:0;right:0;background-repeat:no-repeat;" />');
+	var $resizer = $('<div class="jb-codemirror-resizer" style="position:absolute;bottom:0;right:0;background-repeat:no-repeat;" />');
 	$resizer.css('background', 'url(' + settings.imageUrl + ')').css('width', settings.width).css('height', settings.height).css('cursor', 'se-resize').css("z-index", settings.zIndex);
 	$resizer.appendTo(cmElem);
 
@@ -4654,200 +4656,6 @@ CodeMirror.defineMode("jbart5", function(config, parserConfig) {
   },config, parserConfig);
 });
 
-function jb_cmGrammar(options,config, parserConfig) {
-  var stream,state;
-  var match = { $toEndOfQuote: function(state) { var a = /[^']*/, b = /[^"]*/; return (state.Quote == "'") ? a : b }  };
-  var generic_states = {
-    token: function(profile,path) {
-      if (profile.debug) debugger;
-      var pattern = profile.match;
-      if (typeof pattern === 'object' && !(pattern instanceof RegExp))
-        pattern = match[jb_firstProp(pattern)](state);
-      return {
-        check: function() { return !!stream.match(pattern,false); },
-        next: function() { 
-          state.match = stream.match(pattern);
-          if (state.match === true) state.match = ['']; // empty string match
-          if (!state.match && !profile.optional) 
-            return { token: 'error'} 
-          if (profile.backwards) {
-            stream.backUp(profile.backwards);
-            if (state.match[0]) state.match[0].slice(0,0-profile.backwards);
-          }
-          performAction(profile.action,state);
-          var next = profile.next;
-          var checks_token = profile.check && options.checks[profile.check](state);
-          var token = profile.$token;
-          if (checks_token) token = [token, checks_token].join(' ');
-
-          return { token: token, next: next}
-        }
-      }
-    },
-    startQuote: function(profile, path) {
-      return {
-        check: function() { return stream.match(profile.match,false) },
-        next: function() { 
-          state.Quote = stream.match(profile.match)[0]; 
-          return {token: profile.$startQuote, next: profile.next } 
-         }
-       }
-    },
-    endQuote: function(profile,path) {
-      return {
-        check: function() { return stream.match(state.Quote,false) },
-        next: function() { 
-          stream.match(state.Quote); 
-          return {token: profile.$endQuote, next: profile.next} 
-        }
-      }
-    },
-    sequence: function(profile,path) {
-      return {
-        check: function() { return profToObj(profile.$sequence[0]).check() },
-        next: function(_index) { 
-          var index = parseInt(_index) || 0;
-          if (index >= profile.$sequence.length) {
-            performAction(profile.postAction,state);
-            return {}; 
-          }
-          if (index < profile.$sequence.length - (profile.postAction ? 0 : 1))
-            state.handlersStack.push(path + ':' + (index+1));
-          return profToObj(profile.$sequence[index],path +'.$sequence.'+index).next();
-        }
-      }
-    },
-    repeat: function(profile,path) {
-      return {
-        check: function() { 
-          return stream.match(profile.sep,false) || stream.match(profile.end,false);
-        },
-        next: function(expectSep)  { 
-          if (stream.match(profile.end)) {
-            performAction(profile.postAction,state);
-            return { token: profile.end_token || 'end', next:  state.handlersStack.pop()}
-          }
-          if (expectSep === 'true') {
-            if (stream.match(profile.sep))
-              return { token: profile.sep_token || 'sep', next: path }
-          } else {
-            state.handlersStack.push(path + ':true');
-            return profToObj(options.expressions[profile.$repeat],profile.$repeat).next();
-          }
-          return { token: profile.error || 'error' }
-        }
-      }
-    },
-    exp: function(profile,path) {
-      if (profile.debug) debugger;
-      var obj = profToObj(options.expressions[profile.$exp],profile.$exp);
-      return {
-        check: function() { return obj.check() },
-        next: function()  { return obj.next() } // { token: profile.$exp, next: profile.$exp} },
-      }
-    },
-    externalMode: function(profile,path) {
-      return {
-        check: function() { return stream.match(profile.probe,false) },
-        next: function()  { 
-          state.localMode = CodeMirror.getMode(config, profile.$externalMode);
-          state.localState = state.localMode.startState();
-          return {};
-        },
-      }
-    },
-    firstMatch: function(profile,path) {
-      return {
-        check: function() { return true },
-        next: function() { 
-          if (profile.debug) debugger;
-          var options = profile.$firstMatch;
-          for (var i=0; i<options.length; i++) {
-            var exp = profToObj(options[i],path +'.$firstMatch.'+ i);
-            if (exp.check())
-             return exp.next();
-          }
-  }}}};
-
-  function performAction(action) {
-    if (!action) return;
-    if (Array.isArray(action))
-      action.forEach(function(i){ options.actions[i](state) })
-    else 
-      options.actions[action](state);
-  }
-
-  function profToObj(profile,path) {
-    if (typeof profile === 'string') profile = options.expressions[profile];
-    var pt = jb_firstProp(profile).split('$').pop();
-    if (!generic_states[pt]) 
-      console.log('Can not find PT ' + pt);
-    if (profile.debug) debugger;
-    return generic_states[pt](profile,path);
-  }
-
-  function nextStrToObj(nextStr) {
-    var path = nextStr.split(':')[0];
-    var profile = path.split('.').reduce(function(prof,prop){ return prof[prop]},options.expressions);
-    if (!profile)
-      console.log('can not find profile of path: ' + nextStr);
-    return profToObj(profile,path);
-  }
-
-  function processLocalMode() {
-    var res = state.localMode.token(stream, state.localState);
-    if (state.localState.lastType == '}') { // ugly heuristics for end of local mode
-      if (!state.localState.lexical.prev || !state.localState.lexical.prev.prev) { 
-        state.localMode = state.localState = null;
-        return null;
-      }
-    }
-    return res;
-  }
-
-  function nextToken() {
-    state.token = null;
-    if (!state.next && state.handlersStack.length == 0) {
-      stream.skipToEnd();
-      var ret = { token: 'error' };
-    } else {
-      state.next = state.next || state.handlersStack.pop();
-      var pos_before = stream.pos;
-      var ret = nextStrToObj(state.next).next(state.next && state.next.split(':').pop());
-      if (!ret && stream.pos == pos_before) { // stream not advancded
-        stream.match(/./); // mark next char as error
-        ret = { token: 'error' };
-      }
-    }
-
-    state.next = ret && ret.next; 
-    state.token = ret ? ret.token : 'error';
-  }
-
-  return jb_extend({
-    startState: function() {
-      return jb_extend({ handlersStack: [], next :  options.startExp }, options.startState ) ;
-    },
-
-    token: function(_stream, _state) {
-      stream = _stream; state = _state;
-      try {
-        if (state.localMode) 
-          state.token = processLocalMode();
-        else if (options.ignoreWhiteSpaces && stream.match(/\s+/))
-          state.token = 'space'; 
-        else
-          nextToken();
-//      console.log(state.token);
-        return state.token;
-      } catch (e) {
-        console.log(e);
-      }
-    },
-  },options.cm_options);
-}
-
-
 CodeMirror.registerHelper("hint", "jbart5", function(cm, options) {
 
     function locateToken(to_search,pos) {
@@ -5051,6 +4859,200 @@ CodeMirror.registerHelper("hint", "jbart5", function(cm, options) {
 })(CodeMirror);
 
 });
+
+function jb_cmGrammar(options,config, parserConfig) {
+  var stream,state;
+  var match = { $toEndOfQuote: function(state) { var a = /[^']*/, b = /[^"]*/; return (state.Quote == "'") ? a : b }  };
+  var generic_states = {
+    token: function(profile,path) {
+      if (profile.debug) debugger;
+      var pattern = profile.match;
+      if (typeof pattern === 'object' && !(pattern instanceof RegExp))
+        pattern = match[jb_firstProp(pattern)](state);
+      return {
+        check: function() { return !!stream.match(pattern,false); },
+        next: function() { 
+          state.match = stream.match(pattern);
+          if (state.match === true) state.match = ['']; // empty string match
+          if (!state.match && !profile.optional) 
+            return { token: 'error'} 
+          if (profile.backwards) {
+            stream.backUp(profile.backwards);
+            if (state.match[0]) state.match[0].slice(0,0-profile.backwards);
+          }
+          performAction(profile.action,state);
+          var next = profile.next;
+          var checks_token = profile.check && options.checks[profile.check](state);
+          var token = profile.$token;
+          if (checks_token) token = [token, checks_token].join(' ');
+
+          return { token: token, next: next}
+        }
+      }
+    },
+    startQuote: function(profile, path) {
+      return {
+        check: function() { return stream.match(profile.match,false) },
+        next: function() { 
+          state.Quote = stream.match(profile.match)[0]; 
+          return {token: profile.$startQuote, next: profile.next } 
+         }
+       }
+    },
+    endQuote: function(profile,path) {
+      return {
+        check: function() { return stream.match(state.Quote,false) },
+        next: function() { 
+          stream.match(state.Quote); 
+          return {token: profile.$endQuote, next: profile.next} 
+        }
+      }
+    },
+    sequence: function(profile,path) {
+      return {
+        check: function() { return profToObj(profile.$sequence[0]).check() },
+        next: function(_index) { 
+          var index = parseInt(_index) || 0;
+          if (index >= profile.$sequence.length) {
+            performAction(profile.postAction,state);
+            return {}; 
+          }
+          if (index < profile.$sequence.length - (profile.postAction ? 0 : 1))
+            state.handlersStack.push(path + ':' + (index+1));
+          return profToObj(profile.$sequence[index],path +'.$sequence.'+index).next();
+        }
+      }
+    },
+    repeat: function(profile,path) {
+      return {
+        check: function() { 
+          return stream.match(profile.sep,false) || stream.match(profile.end,false);
+        },
+        next: function(expectSep)  { 
+          if (stream.match(profile.end)) {
+            performAction(profile.postAction,state);
+            return { token: profile.end_token || 'end', next:  state.handlersStack.pop()}
+          }
+          if (expectSep === 'true') {
+            if (stream.match(profile.sep))
+              return { token: profile.sep_token || 'sep', next: path }
+          } else {
+            state.handlersStack.push(path + ':true');
+            return profToObj(options.expressions[profile.$repeat],profile.$repeat).next();
+          }
+          return { token: profile.error || 'error' }
+        }
+      }
+    },
+    exp: function(profile,path) {
+      if (profile.debug) debugger;
+      var obj = profToObj(options.expressions[profile.$exp],profile.$exp);
+      return {
+        check: function() { return obj.check() },
+        next: function()  { return obj.next() } // { token: profile.$exp, next: profile.$exp} },
+      }
+    },
+    externalMode: function(profile,path) {
+      return {
+        check: function() { return stream.match(profile.probe,false) },
+        next: function()  { 
+          state.localMode = CodeMirror.getMode(config, profile.$externalMode);
+          state.localState = state.localMode.startState();
+          return {};
+        },
+      }
+    },
+    firstMatch: function(profile,path) {
+      return {
+        check: function() { return true },
+        next: function() { 
+          if (profile.debug) debugger;
+          var options = profile.$firstMatch;
+          for (var i=0; i<options.length; i++) {
+            var exp = profToObj(options[i],path +'.$firstMatch.'+ i);
+            if (exp.check())
+             return exp.next();
+          }
+  }}}};
+
+  function performAction(action) {
+    if (!action) return;
+    if (Array.isArray(action))
+      action.forEach(function(i){ options.actions[i](state) })
+    else 
+      options.actions[action](state);
+  }
+
+  function profToObj(profile,path) {
+    if (typeof profile === 'string') profile = options.expressions[profile];
+    var pt = jb_firstProp(profile).split('$').pop();
+    if (!generic_states[pt]) 
+      console.log('Can not find PT ' + pt);
+    if (profile.debug) debugger;
+    return generic_states[pt](profile,path);
+  }
+
+  function nextStrToObj(nextStr) {
+    var path = nextStr.split(':')[0];
+    var profile = path.split('.').reduce(function(prof,prop){ return prof[prop]},options.expressions);
+    if (!profile)
+      console.log('can not find profile of path: ' + nextStr);
+    return profToObj(profile,path);
+  }
+
+  function processLocalMode() {
+    var res = state.localMode.token(stream, state.localState);
+    if (state.localState.lastType == '}') { // ugly heuristics for end of local mode
+      if (!state.localState.lexical.prev || !state.localState.lexical.prev.prev) { 
+        state.localMode = state.localState = null;
+        return null;
+      }
+    }
+    return res;
+  }
+
+  function nextToken() {
+    state.token = null;
+    if (!state.next && state.handlersStack.length == 0) {
+      stream.skipToEnd();
+      var ret = { token: 'error' };
+    } else {
+      state.next = state.next || state.handlersStack.pop();
+      var pos_before = stream.pos;
+      var ret = nextStrToObj(state.next).next(state.next && state.next.split(':').pop());
+      if (!ret && stream.pos == pos_before) { // stream not advancded
+        stream.match(/./); // mark next char as error
+        ret = { token: 'error' };
+      }
+    }
+
+    state.next = ret && ret.next; 
+    state.token = ret ? ret.token : 'error';
+  }
+
+  return jb_extend({
+    startState: function() {
+      return jb_extend({ handlersStack: [], next :  options.startExp }, options.startState ) ;
+    },
+
+    token: function(_stream, _state) {
+      stream = _stream; state = _state;
+      try {
+        if (state.localMode) 
+          state.token = processLocalMode();
+        else if (options.ignoreWhiteSpaces && stream.match(/\s+/))
+          state.token = 'space'; 
+        else
+          nextToken();
+//      console.log(state.token);
+        return state.token;
+      } catch (e) {
+        console.log(e);
+      }
+    },
+  },options.cm_options);
+}
+
 jb_component('studio.probeControl',{ 
   type:'data',
   params: {
@@ -5567,6 +5569,8 @@ jb_component('studio.select', {
 function jb_studioHighlightPreviewElems(elems) {
 	var boxes = [];
 	
+	$('.jbstudio_highlight_in_preview').remove();
+	
 	$(elems).each(function() {
 		var $box = $('<div class="jbstudio_highlight_in_preview"/>').css({ position: 'absolute', background: 'rgb(193, 224, 228)', border: '1px solid blue' ,opacity: '1', zIndex: 5000 });
 		var offset = $(this).offset();
@@ -5574,13 +5578,13 @@ function jb_studioHighlightPreviewElems(elems) {
 		boxes.push($box[0]);
 	})
 
-	$(boxes).fadeTo('2000',0.5,function() {
-		$(boxes).fadeTo('2000',0,function() {
+	$(jbart.studio.previewWindow.document.body).append($(boxes));	
+
+	$(boxes).css({ opacity: 0.5 }).
+		fadeTo(1500,0,function() {
 			$(boxes).remove();
 		});
-	});
 	
-	$(jbart.studio.previewWindow.document.body).append($(boxes));	
 }
 
 jb_component('studio.highlightProfileInPreview', {
@@ -5812,6 +5816,10 @@ jb_component('dialog.studioFloating', {
 					{$: 'studio-dialogFeature.studioPopupLocation' },
 				]);
 				jb_dialog(dialog);
+				jb_setStudioState( jb_obj('popup-' + id + '-open', true) );
+				jb_bind(dialog,'close',function() {
+					jb_setStudioState(jb_obj('popup-' + id + '-open', false) );
+				});
 			}
 		}
 	}
@@ -7569,6 +7577,15 @@ jb_component('studio.componentHasParams',{
 jbart.dialogsParent = function() {
 	return $('#jb-inspector-top')[0] || $('<div id="jb-inspector-top" />').appendTo('body')[0];
 }
+
+function jb_setStudioState(state) {
+	jbart.studio.state = $.extend(jbart.studio.state, state);
+	sessionStorage['studio state'] = JSON.stringify(jbart.studio.state);
+}
+
+function jb_restoreStudioState() {
+	jbart.studio.state = JSON.parse(sessionStorage['studio state'] || null) || {};
+}
 jbart.studio = jbart.studio || {};
 jbart.studio.directives = ["ng-app", "ng-bind", "ng-bind-html", "ng-bind-template", "ng-blur", "ng-change", "ng-checked", "ng-class", "ng-class-even", "ng-class-odd", "ng-click", "ng-cloak", "ng-controller", "ng-copy", "ng-csp", "ng-cut", "ng-dblclick", "ng-disabled", "ng-focus", "ng-form", "ng-hide", "ng-href", "ng-if", "ng-include", "ng-init", "ng-jq", "ng-keydown", "ng-keypress", "ng-keyup", "ng-list", "ng-model", "ng-model-options", "ng-mousedown", "ng-mouseenter", "ng-mouseleave", "ng-mousemove", "ng-mouseover", "ng-mouseup", "ng-non-bindable", "ng-open", "ng-options", "ng-paste", "ng-pluralize", "ng-readonly", "ng-repeat", "ng-selected", "ng-show", "ng-src", "ng-srcset", "ng-style", "ng-submit", "ng-switch", "ng-transclude", "ng-value"];
 
@@ -7662,7 +7679,7 @@ jb_component("studio.angularToolbar", {
 jb_component('studio-ng.openTemplatePopup', {
 	type: 'action',
 	params: {
-		templateElem: {}
+		templateElem: { defaultValue: function() { return jbart.studio.templateElem; } }
 	},
 	impl: {
 		$: 'openDialog',
@@ -7673,7 +7690,7 @@ jb_component('studio-ng.openTemplatePopup', {
 		style: { $: 'dialog.studioFloating', id: 'studio template code' },
 		content: {
 			$: 'editableText', parent: '{{$code}}', property: 'v',
-			style: { $: 'editableText.codemirror', resizer: 'angular code resizer', mode: 'htmlmixed', 
+			style: { $: 'editableText.codemirror', resizer: 'angular code resizer', mode: 'htmlmixed', lineWrapping: true,
 				onLoad: function(context) { jb_ngInitCodemirror(context.vars.cm_editor); }
 			 },
 			features: { $onctrlenter: { $: 'ng-studio.updateTemplateElement', code: '{{$code.v}}', templateElem: '{{$templateElem}}' } }
@@ -7691,8 +7708,8 @@ jb_component('ng-studio.refreshPreview', {
 jb_component('studio.openAngularPropertiesPopup', {
 	type: 'action',
 	params: {
-		templateElem: {},
-		scope: {}
+		templateElem: { defaultValue: function() { return jbart.studio.templateElem; } },
+		scope: { defaultValue: function() { return jbart.studio.scope; } }
 	},
 	impl: {
 		$: 'openDialog',
@@ -7871,26 +7888,25 @@ function jb_studioAngularStart() {
 }
 
 function jb_studioAngularPickElem(context,elem) {
+	jb_setStudioState({ selectedElemPath: jbn_getDomPath(elem).join('>') });
+	jbart.studio.elem = elem;
 	jbart.studio.templateElem = jb_angularElemToTemplate(elem);
 	if (!jbart.studio.templateElem) {
 		console.log('error finding template of element - jbid = ' + elem.getAttribute('_jb'));
 		console.log('jbDebugIDs[jbid]=');
 		console.log(jbDebugIDs[elem.getAttribute('_jb')]);
 	}
-	jbart.studio.templateElemScope = jbart.studio.previewWindow.angular.element(elem).scope();
+	jbart.studio.scope = jbart.studio.previewWindow.angular.element(elem).scope();
 	jb_run(jb_ctx(context,{
 		data: null,
 		profile: [
-			{ $: 'studio-ng.openTemplatePopup', elem: '{{$elem}}', templateElem: '{{$templateElem}}' },
-			{ $: 'studio.openAngularPropertiesPopup', elem: '{{$elem}}', templateElem: '{{$templateElem}}', scope: '{{$scope}}' },
-			{ $: 'studio-ng.openOutlinePopup', elem: '{{$elem}}', templateElem: '{{$templateElem}}' }
-		],
-		vars: {
-			elem: elem,
-			templateElem: jbart.studio.templateElem,
-			scope: jbart.studio.templateElemScope
-		}
-	}),{ type:'action'});	
+			{ $: 'studio-ng.openTemplatePopup' },
+			{ $: 'studio.openAngularPropertiesPopup'},
+			{ $: 'studio-ng.openOutlinePopup' },
+			{ $: 'studio-ng.openScopePopup'}
+		]
+	}),{ type:'action'});
+	jbart.studio.$rootScope.$apply();
 }
 
 function jb_ngStudioRefreshPreview(context) {
@@ -7937,6 +7953,37 @@ function jbn_inspectData() {
 	if (window.jbInspect) return window.jbInspect;
 	if (window._window && _window.jbInspect) return _window.jbInspect;
 }
+
+function jbn_getDomPath(el) {
+	// taken from http://stackoverflow.com/questions/5728558/get-the-dom-path-of-the-clicked-a
+  var stack = [];
+  while ( el.parentNode != null ) {
+    var sibCount = 0;
+    var sibIndex = 0;
+    for ( var i = 0; i < el.parentNode.childNodes.length; i++ ) {
+      var sib = el.parentNode.childNodes[i];
+      if ( sib.nodeName == el.nodeName ) {
+        if ( sib === el ) {
+          sibIndex = sibCount;
+        }
+        sibCount++;
+      }
+    }
+    if ( el.hasAttribute('id') && el.id != '' ) {
+      stack.unshift(el.nodeName.toLowerCase() + '#' + el.id);
+    } else if ( sibCount > 1 ) {
+      stack.unshift(el.nodeName.toLowerCase() + ':eq(' + sibIndex + ')');
+    } else {
+      stack.unshift(el.nodeName.toLowerCase());
+    }
+    el = el.parentNode;
+  }
+
+  return stack.slice(1); // removes the html element
+}
+
+
+
 function jbn_studioHtmlElem(htmlName,controllerOrProps,parent) {
 	var html = jb_getHtmlImport('studio/html/' + htmlName + '.html');
 	var scope = jbart.studio.$rootScope.$new(true);
@@ -7970,10 +8017,28 @@ function jbn_openStudioMainWindow() {
 		title: 'jbart ng inspector',
 		content: jbn_studioHtmlElem('main-window',{
 			showTemplates: jbn_showTemplates,
-			select: jbn_select
+			select: jbn_select,
+			showScope: jbn_openScopePopup,
+			scope: function() { return jbart.studio.scope; },
+			save: jbn_save
 		}),
 		id: 'studio main window'
 	})
+}
+
+function jbn_save() {
+	var templateDB = jbn_templateDB();
+	jb_map(templateDB, function(template) {
+		if (!$('#jbn-save')[0])
+			$('<span id="jbn-save"></span>').appendTo("body");
+		var separator = '----JB-SEPARATOR----';
+		var toSave = template.value.replace(/[ ]?_jb="[0-9]*"/g,'');
+		var lastSave = (template.lastSaved || template.fileSource);
+		if (lastSave != toSave) {
+			$('#jbn-save').text(lastSave + separator + toSave);
+			template.lastSave = toSave;
+		}
+	});
 }
 
 function jbn_showTemplates() {
@@ -7986,17 +8051,43 @@ function jbn_select() {
 }
 
 window.jbn_toolbarClick = function() {
-	if (! $('.jbart-dialog').hasClass('jb-hidden'))	// hide
+	if ($('.jbart-dialog')[0] && ! $('.jbart-dialog').hasClass('jb-hidden'))	{// hide
 		$('.jbart-dialog').addClass('jb-hidden');
+		jb_setStudioState({ popupsHidden: true });
+	}
 	else {
 		$('.jbart-dialog').removeClass('jb-hidden');				// show
-		jbn_openStudioMainWindow();
+		jb_setStudioState({ popupsHidden: false });
+		jbn_initPopups();
 	}
 }
 
+function jbn_initPopups() {
+	if (!jbart.studio.state.popupsHidden) {
+		jbn_openStudioMainWindow();
+		if (jbart.studio.state['popup-studio templates-open'] != false) // false means user clicked on close
+			jbn_showTemplates();
+		if (jbart.studio.state['popup-studio properties-open']) 
+			jb_run(jb_ctx(jb_ctx(),{ profile: { $: 'studio.openAngularPropertiesPopup'}}));
+		if (jbart.studio.state['popup-studio template code-open']) 
+			jb_run(jb_ctx(jb_ctx(),{ profile: { $: 'studio-ng.openTemplatePopup'}}));
+		if (jbart.studio.state['popup-studio control tree-open']) 
+			jb_run(jb_ctx(jb_ctx(),{ profile: { $: 'studio-ng.openOutlinePopup'}}));
+		if (jbart.studio.state['popup-studio scope-open']) 
+			jbn_openScopePopup();
+	}	
+}
+
 function jbn_onInspectorLoaded() {
-	jbn_openStudioMainWindow();
-	jbn_showTemplates();	
+	jb_restoreStudioState();
+	if (jbart.studio.state.selectedElemPath) {
+		jbart.studio.elem = $(jbart.studio.state.selectedElemPath)[0];
+		if (jbart.studio.elem) {
+			jbart.studio.templateElem = jb_angularElemToTemplate(jbart.studio.elem);
+			jbart.studio.scope = angular.element(jbart.studio.elem).scope();
+		}
+	}
+	jbn_initPopups();
 }
 angular.module('jbart-studio-app',[])
 .run(function($compile,$rootScope,$timeout,$templateCache) {
@@ -8022,7 +8113,6 @@ jbart.studio.ngDirectivesByTag = {
 }
 
 function jb_ngCodemirrorHints(cm, options) {
-	// jbn_fillCssClassartesList();
 	var cur = cm.getCursor(), token = cm.getTokenAt(cur), list = null, replaceToken;
 	var toCursor = token.string.substring(0,cur.ch-token.start);
 	toCursor = (toCursor.indexOf('(') != -1) ? toCursor.split('(')[1] : toCursor;	// e.g ng-click="addTodo(
@@ -8037,8 +8127,8 @@ function jb_ngCodemirrorHints(cm, options) {
 			var attribute = cm.getTokenAt({line:cur.line, ch:token.start-1}).string;
 			if (attribute == "class")
 				list = jb_ngFilterList(jbart.studio.cssClasses, toCursor);
-			else if (attribute.indexOf('ng') == 0)	// complete with scope values
-				list = jb_ngScopeValues(jbart.studio.templateElemScope, toCursor);
+			else if (attribute.indexOf('ng') == 0 || attribute.indexOf('data-ng') == 0)	// complete with scope values
+				list = jb_ngScopeValues(jbart.studio.scope, toCursor);
 			else {	// complete with html static values
 				var values = jb_path(CodeMirror.htmlSchema,[tag,'attrs',attribute]);
 				if (Array.isArray(values))
@@ -8123,23 +8213,6 @@ function jb_ngInitCodemirror(editor) {
 	editor.execCommand('goDocStart')
 }
 
-function jbn_fillCssClassesList() {
-	if (jbart.studio.cssClasses) return;
-	jbart.studio.cssClasses = [];
-	var all = {};
-	for (var i=0; i<document.styleSheets.length; i++) {
-		for (var j=0; j<document.styleSheets[i].cssRules; j++ ) {
-			var rule = document.styleSheets[i].cssRules[j];
-			jb_map(rule.selectorText.match(/[.][\w-]+/g), function(clsFull) {
-				var cls = clsFull.substring(1);	// remove .
-				if (!all[cls]) {
-					all[cls] = true;
-					jbart.studio.cssClasses.push(cls);
-				}
-			});
-		}
-	}
-}
 jb_component('studio.angularPreviewIframe',{
 	type: 'control',
 	impl: function(context,widgetName) {
@@ -8302,7 +8375,7 @@ jb_component("studio.inspectorMenu", {
 jb_component('studio-ng.openOutlinePopup', {
 	type: 'action',
 	params: {
-		templateElem: {}
+		templateElem: { defaultValue: function() { return jbart.studio.templateElem; } }
 	},
 	impl: {
 		$: 'openDialog',
@@ -8319,7 +8392,6 @@ jb_component('studio-ng.openOutlinePopup', {
 			  { $: 'studio-ng.outlineTreeIcon' },
 			  { $: 'treeSelection',
 			    onSelection: [
-				    { $: 'studio.openAngularPropertiesPopup', templateElem: '{{$treeElem}}' },
 				    { $: 'studio-ng.highlightTemplateInPreview', templateElem: '{{$treeElem}}' }
 			    ]
 			  },
@@ -8509,7 +8581,7 @@ jb_component("ng-studio.showTemplate", {
 		},		
 		content: {
 			$: 'editableText', parent: '{{$code}}', property: 'v',
-			style: { $: 'editableText.codemirror', resizer: true, mode: 'htmlmixed' },
+			style: { $: 'editableText.codemirror', resizer: true, mode: 'htmlmixed', lineWrapping: true },
 			features: [
 				{ $onctrlenter: { $: 'ng-studio.updateTemplate', code: '{{$code.v}}', template: '{{$template}}' } }
 			]			
@@ -8522,6 +8594,100 @@ jb_component("ng-studio.templateAsString", {
 	params: { template: { as: 'single'} },
 	impl: function(context,template) {
 		return jbn_templateDB()[template].value.replace(/[\s]_jb=".*"/g,'');
+	}
+});
+
+function jbn_openScopePopup() {
+	jb_run(jb_ctx(jb_ctx(),{ profile: { $: 'studio-ng.openScopePopup'}}));
+}
+
+jb_component('studio-ng.openScopePopup', {
+	type: 'action',
+	impl: {
+		$: 'openDialog',
+		title: [{ $urlHashParam: 'studioPage' }, 'Scope'],
+		style: { $: 'dialog.studioFloating', id: 'studio scope' },
+		content: {
+			$: 'tree',
+			nodes: { $: 'studio-ng.scopeNodes' },
+			style: 'studio-control-tree',
+			itemVariable: 'treeElem',
+			itemText: { $: 'studio-ng.scopeText'},
+			features: [
+			  { $: 'studio-ng.scopeTreeIcon' },
+			  { $: 'treeSelection' }
+			]
+		}
+	}
+});
+
+jb_component('studio-ng.scopeNodes', {
+	type: 'treeNodes',
+	impl: function(context,templateElem) {
+		initClass();
+		return scopeItems(jbart.studio.scope);
+
+		function scopeItems(baseScope) {
+			if (!baseScope) return [];
+			var out = [];
+
+			for (var i in baseScope)
+				if (baseScope.hasOwnProperty(i) && i.indexOf('$') != 0 && typeof(baseScope[i]) != 'function')
+					out.push( new jbart.classes.ngScopeTreeNode( { name: i, value: baseScope[i] }) );
+
+			for (var i in baseScope)
+				if (baseScope.hasOwnProperty(i) && i.indexOf('$') != 0 && typeof(baseScope[i]) == 'function')
+					out.push( new jbart.classes.ngScopeTreeNode( { name: i, value: baseScope[i] }));
+
+			if (baseScope.$parent)
+				out.push( new jbart.classes.ngScopeTreeNode( { name: '$parent', value: baseScope.$parent }));
+
+			return out;
+		}
+
+		function initClass() {
+			if (jbart.classes.ngScopeTreeNode) return;
+
+			jbart.classes.ngScopeTreeNode = function(value) {
+				this.value = value;
+			}
+			jbart.classes.ngScopeTreeNode.prototype.children = function() {
+				if (typeof(this.value.value) == 'object')
+					return scopeItems(this.value.value);
+			}
+		}
+	}
+});
+
+jb_component('studio-ng.scopeText', {
+	params: {
+		node: { defaultValue: '{{}}'}
+	},
+	impl: function(context,node) {
+		if (typeof (node.value) == 'function')
+		return node.name + '()';
+		try {
+			var val = (typeof (node.value) == 'object') ? JSON.stringify(node.value) : node.value;
+			return node.name + " = " + val;
+		}
+		catch (e) {	// stringify error
+			return node.name;
+		}
+	}
+});
+
+jb_component('studio-ng.scopeTreeIcon',{
+	type: 'treeFeature',
+	impl: function(context) {
+		jb_bind(context.vars.control,'treenode',function($node) {
+			var pos = '0 -32px';
+			var item = $node[0].jbNode.value;
+			var value = item.value;
+			var valueType = typeof value;
+			if (valueType == 'function') pos = '-32px -32px';
+
+			$node.find('.treenode-icon').first().css('background-position',pos);
+		})
 	}
 });
 
@@ -8545,8 +8711,7 @@ function jb_angularElemToTemplate(elem) {
 }
 
 function jb_ngStudioFindElemsOfTemplate(tElem) {
-	var _doc = jbart.studio.previewWindow.document;
-	return $(_doc).find('*').get().filter(function(elem) {
+	var _doc = jbart.studio.previewWindow.document;	return $(_doc).find('*').get().filter(function(elem) {
 		return jb_angularElemToTemplate(elem) == tElem;
 	});
 }
@@ -8600,8 +8765,7 @@ function jbn_putTemplateToCache(name,value,$delegate,updatedFromStudio) {
 			});
 			valueAsStr = $elem.get().map(function(e) { return e.outerHTML; }).join('');
 		}
-
-		templateDB[name] = { value: valueAsStr, $elem: $elem, original: value };
+		templateDB[name] = { value: valueAsStr, $elem: $elem, original:value, fileSource: templateDB[name] ? templateDB[name].fileSource : value };
 		if (updatedFromStudio) 
 			sessionStorage['jbart-updated-template-'+name] = valueAsStr;
 
@@ -8654,6 +8818,15 @@ jb_tests('studio-ng', {
 			scope: { $object: { name:'John', address: { city: 'NewYork' } } }
 		},
 		expectedResult: { $contains: [ "name", "John", "address.city", "NewYork" ] }
+	},
+	'data-ng': {
+		$: 'dataTest',
+		calculate: {
+			$:'studio.codeMirrorCompletionList',
+			content: '<input data-ng-model="',
+			scope: { $object: { name:'John' } }
+		},
+		expectedResult: { $contains: [ "name", "John" ] }
 	},
 	'code mirror scope simple value': {
 		$: 'dataTest',
@@ -8727,7 +8900,7 @@ jb_component('studio.codeMirrorCompletionList',{
 	    cursorChar = (cursorChar == null && cursorLine == 0) ? content.length : cursorChar;
 	    editor.getDoc().setCursor(cursorLine,cursorChar);
 	    var original = jbart.studio;
-	    $.extend(jbart.studio, { templateElemScope : scope, cssClasses : cssClasses } );
+	    $.extend(jbart.studio, { scope : scope, cssClasses : cssClasses } );
 	    hints = jb_ngCodemirrorHints(editor);
 	    jbart.studio = original;
 	  } catch(e) {
@@ -10362,6 +10535,12266 @@ angular.module('jbartIntercept').run(['$templateCache', function($templateCache)
     "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
     "\n" +
     "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    ""
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul> "
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showScope()\" title=\"show templates\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" title=\"show templates\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show1=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show1=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span>{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span ng-show=\"item.hasMore\">+</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li class=\"scope-item\" ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ 'can-open': item.hasMore }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li class=\"scope-item\" ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ 'can-open': item.hasMore }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li class=\"scope-item-in-tree\" ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ 'can-open': item.hasMore }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul>\r" +
+    "\n" +
+    "\t<li class=\"scope-item-in-tree\" ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ 'can-open': item.hasMore }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-item-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ 'can-open': item.hasMore }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ 'can-open': item.hasMore }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ open: item.hasMore }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ 'can-open': true }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ open: true }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span ng-class=\"{ open: true }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ open: true }\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"open\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"\" ng-class=\"expand-box open\"/>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span ng-class=\"expand-box open\"></span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span ng-class=\"open\"></span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span ng-class=\"open\">BB</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-show=\"item.hasMore\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-show=\"item.hasMore\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" ng-show=\"item.hasMore\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-show=\"item.hasMore\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" ng-show=\"hasMore\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-show=\"item.hasMore\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" ng-show=\"item.hasMore\">AA{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-show=\"item.hasMore\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" ng-show=\"item.hasMore\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-show=\"item.hasMore\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" ng-show=\"item.hasMore\">{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-show=\"item.hasMore\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-show=\"item.hasMore\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ item.hasMore }\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ frame: item.hasMore }\">\r" +
+    "\n" +
+    "\t\t\t<span class=\"frame\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"lr\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t\t<span class=\"tb\" ng-show=\"item.hasMore\"/>\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ frame: item.hasMore, expanded: false }\" />\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" ng-class=\"{ frame: item.hasMore, expanded: item.expanded }\" />\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{expanded: item.expanded}\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{line: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{expanded: item.expanded}\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{expanded: item.expanded}\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded}\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded}\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"treenode-label\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-title=\"item.value\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-title=\"item.value\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-title=\"{{item.value}}\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{value}}\" ng-hide=\"hideValue\">{{value}}</span>\r" +
+    "\n" +
+    "\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "\t<span>Hi {{gugi}}</span>\r" +
+    "\n" +
+    "\t<div ng-controller=\"innerItem\">\r" +
+    "\n" +
+    "\t\t\t<span>A {{gugi}}</span>\r" +
+    "\n" +
+    "\t\t<!-- <ng-include src=\"studio/html/scope.html\" /> -->\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{value}}\" ng-hide=\"hideValue\">{{value}}</span>\r" +
+    "\n" +
+    "\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "\t<span>Hi {{gugi}}</span>\r" +
+    "\n" +
+    "\t<div ng-controller=\"innerItem\">\r" +
+    "\n" +
+    "\t\t\t<span>A {{gugi}}</span>\r" +
+    "\n" +
+    "\t\t<!-- <ng-include src=\"studio/html/scope.html\" /> -->\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{value}}\" ng-hide=\"hideValue\">{{value}}</span>\r" +
+    "\n" +
+    "\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "\t<span>Hi {{gugi}}</span>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{value}}\" ng-hide=\"hideValue\">{{value}}</span>\r" +
+    "\n" +
+    "\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "\t<span>Hi {{gugi}}</span>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{value}}\" ng-hide=\"hideValue\">{{value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "\t<span>Hi {{gugi}}</span>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{value}}\" ng-hide=\"hideValue\">{{value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "\t<div ng-controller=\"innerItem\">Hi {{innerItem}}</div>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "\t<div ng-controller=\"innerItem\">Hi {{attr1}}</div>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t\t<div ng-controller=\"innerItem\">Hi {{attr1}}</div>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t\t<div ng-bind-html=\"myHTML\"/>\r" +
+    "\n" +
+    "\t\t<div ng-controller=\"innerItem\">Hi {{attr1}}</div>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t\t<div ng-bind-html=\"innerItems()\"/>\r" +
+    "\n" +
+    "\t\t<div ng-controller=\"innerItem\">Hi {{attr1}}</div>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t\t<div ng-bind-html=\"innerItemCode()\"/>\r" +
+    "\n" +
+    "\t\t<div ng-controller=\"innerItem\">Hi {{attr1}}</div>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t\t<div ng-bind-html=\"innerItemHtml()\"/>\r" +
+    "\n" +
+    "\t\t<div ng-controller=\"innerItem\">Hi {{attr1}}</div>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t\t<div ng-bind-html=\"innerItemContent()\"/>\r" +
+    "\n" +
+    "\t\t<div ng-controller=\"innerItem\">Hi {{attr1}}</div>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/scope.html',
+    "<ul class=\"scope-items-in-tree\">\r" +
+    "\n" +
+    "\t<li ng-repeat=\"item in scope()\">\r" +
+    "\n" +
+    "\t\t<span class=\"expand-box\" >\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{frame: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{lrLine: item.hasMore}\" />\r" +
+    "\n" +
+    "\t\t\t<span ng-class=\"{tbLine: !item.expanded &amp;&amp; item.hasMore }\" />\r" +
+    "\n" +
+    "\t\t</span>\r" +
+    "\n" +
+    "\t\t<span class=\"name\" >{{item.name}}</span>\r" +
+    "\n" +
+    "\t\t<span class=\"value\" ng-attr-title=\"{{item.value}}\" ng-hide=\"hideValue\">{{item.value}}</span>\r" +
+    "\n" +
+    "\t\t<div ng-bind-html=\"innerItemContent(item)\"/>\r" +
+    "\n" +
+    "\t\t<div ng-controller=\"innerItem\">Hi {{attr1}}</div>\r" +
+    "\n" +
+    "\t</li>\r" +
+    "\n" +
+    "</ul>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\">{}<span/></button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2-yaniv2-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2-yaniv2-yaniv2-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2-yaniv2-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates-yaniv2-yaniv2-yaniv2-yaniv2\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">Save</button>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/outline.html',
+    "<section class=\"studio-outline\">\r" +
+    "\n" +
+    "\t<section class=\"toolbar\">\r" +
+    "\n" +
+    "\t\t<button title=\"Edit html\" class=\"toolbar-btn edit-html-btn\" ng-click=\"editHtml()\" />\r" +
+    "\n" +
+    "\t</section>\r" +
+    "\n" +
+    "\t<jbart component=\"studio-ng.outlineTree\" data=\"{{templateElem}}\" />\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/properties.html',
+    "<section class=\"studio-properties-in-dialog\">\r" +
+    "\n" +
+    "\t<div class=\"studio-propertySheet\">\r" +
+    "\n" +
+    "\t\t<div class=\"property innerText\" ng-show=\"innerText\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">text:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"property-content jb-studio-primitive-textbox\" ng-model=\"innerText\" ng-keydown=\"propertyKeyDown($event,true)\"/>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t\t<div class=\"property\" ng-repeat=\"attr in attributes\">\r" +
+    "\n" +
+    "\t\t\t<label class=\"property-title\">{{attr.name}}:</label>\r" +
+    "\n" +
+    "\t\t\t<input class=\"propertty-content jb-studio-primitive-textbox\" ng-model=\"attr.value\" ng-keydown=\"propertyKeyDown($event)\"/>\r" +
+    "\n" +
+    "\t\t\t<button class=\"delete\" ng-click=\"deleteDirective(attr.name)\">&#10006;</button>\r" +
+    "\n" +
+    "\t\t</div>\r" +
+    "\n" +
+    "\t</div>\r" +
+    "\n" +
+    "\t<select id=\"newDirective\" ng-model=\"newDirective\" ng-change=\"addDirective(newDirective)\">\r" +
+    "\n" +
+    "\t\t<option selected>+</option>\r" +
+    "\n" +
+    "\t\t<option ng-repeat=\"dir in directives\">{{dir}}</option>\r" +
+    "\n" +
+    "\t</select>\r" +
+    "\n" +
+    "</section>"
+  );
+
+
+  $templateCache.put('studio/html/templates.html',
+    "<section class=\"studio-ng-templates\">\r" +
+    "\n" +
+    "\t<input ng-model=\"search\" placeholder=\"search template\" jb-selection-search ng-show=\"templates.length > 20\"/>\r" +
+    "\n" +
+    "\t<ul>\r" +
+    "\n" +
+    "\t\t<li ng-repeat=\"template in templates | filter:search\" ng-click=\"openTemplate()\" jb-selection>\r" +
+    "\n" +
+    "\t\t\t<div>{{template}}</div>\r" +
+    "\n" +
+    "\t\t</li>\r" +
+    "\n" +
+    "\t</ul>\r" +
+    "\n" +
+    "</section>"
+  );
+
+}]);
+angular.module('jbartIntercept').run(['$templateCache', function($templateCache) {
+  'use strict';
+
+  $templateCache.put('studio/html/auto-complete-popup.html',
+    "<div class=\"studio-auto-complete-popup\" style=\"top:{{top}};left:{{left}}\" ng-show=\"autoCompleteOn\">\r" +
+    "\n" +
+    "\t<table>\r" +
+    "\n" +
+    "\t\t<tr class=\"item\" ng-repeat=\"(name,value) in scope\" ng-click=\"itemClick(name)\">\r" +
+    "\n" +
+    "\t\t\t<td class=\"name\"><span>{{name}}</span></td>\r" +
+    "\n" +
+    "\t\t\t<td class=\"value\" ng-attr-title=\"{{value}}\"><span>{{value}}</span></td>\r" +
+    "\n" +
+    "\t\t</tr>\r" +
+    "\n" +
+    "\t</table>\r" +
+    "\n" +
+    "</div>"
+  );
+
+
+  $templateCache.put('studio/html/insert-in-toolbar.html',
+    "<select class=\"insert-in-toolbar\" ng-model=\"newTag\" ng-change=\"insert(newTag)\">\r" +
+    "\n" +
+    "\t<option>Insert ...</option>\r" +
+    "\n" +
+    "\t<option ng-repeat=\"tag in htmlTags\">{{tag}}</option>\r" +
+    "\n" +
+    "</select>\r" +
+    "\n"
+  );
+
+
+  $templateCache.put('studio/html/main-window.html',
+    "<div class=\"jbart-inspector-toolbar\">\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-select\" ng-click=\"select()\" title=\"select\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-templates\" ng-click=\"showTemplates()\" title=\"show templates\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button jbart-show-scope\" ng-click=\"showScope()\" ng-show=\"scope()\" title=\"show scope\"><span/></button>\r" +
+    "\n" +
+    "\t<button class=\"jbart-toolbar-button\" ng-click=\"save()\" title=\"Save\">S</button>\r" +
     "\n" +
     "</div>"
   );
