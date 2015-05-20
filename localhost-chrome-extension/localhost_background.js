@@ -66,7 +66,7 @@ function listenToSave(tabId) {
 }
 
 function save(tabId,find,replace) {
-  var saveAppId = "dlkihbhmbjajiadbkbgenjhnpdghlpom";
+  var saveAppId = "alfephffdmnaceibnfknhcmnoeaeodjl";
   chrome.runtime.sendMessage(saveAppId, { op: 'save', tabId: tabId, find:find, replace:replace });
 }
 
