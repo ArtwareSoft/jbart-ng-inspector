@@ -186,13 +186,11 @@ padding: 10px 10px 10px 27px; color: #6D6E71; min-height: 12px; border-bottom: 1
   border-bottom: 1px solid #BEBEBE; 
 }
 .studio-floating-dialog>.dialog-content { min-width1: 300px; min-height1: 50px; overflow1: auto; }
-.studio-floating-dialog>.dialog-close { position: absolute; cursor: pointer; right: 4px; top: 4px; font: 21px sans-serif; border: none; background: transparent; color: #000; text-shadow: 0 1px 0 #fff; font-weight: 700; opacity: .2;}
-.studio-floating-dialog>.dialog-close:hover { opacity: .5; }
+.studio-floating-dialog>.dialog-close, .studio-floating-dialog>.dialog-hide { position: absolute; cursor: pointer; right: 4px; top: 4px; font: 21px sans-serif; border: none; background: transparent; color: #000; text-shadow: 0 1px 0 #fff; font-weight: 700; opacity: .2;}
+.studio-floating-dialog>.dialog-close:hover, .studio-floating-dialog>.dialog-hide:hover { opacity: .5; }
 
 .studio-floating-dialog .CodeMirror { width: 550px; font-size: 12px;}
 .studio-floating-dialog .CodeMirror * { font-size: 12px;}
-
-
 
 /* .studio-allTests-main-group */
 .studio-allTests-main-group {	margin: 25px 0 0 20px; }
@@ -583,3 +581,5 @@ background-position: -49px -16px; content: ''; }
 .scope-items-in-tree>li>.value { color: #949494; font-size: 12px; padding-left: 5px; }
 
 .jb-codemirror-resizer { background: url('resizer.gif') !important;}
+
+.id-code-mirror #templates-list { width:100%; max-width:550px; padding: 3px; }

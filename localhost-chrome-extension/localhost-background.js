@@ -1,7 +1,9 @@
 var tabIdsToMonitor = {};
+var saveAppId = "alfephffdmnaceibnfknhcmnoeaeodjl";
 
 chrome.webRequest.onBeforeRequest.addListener(function(details) {
-  console.log(details.url);
+  // tabIdsToMonitor[details.tabId] = { version: '1.3.4', tabId: details.tabId, inLocalHost: true };
+  // console.log(details.url);
   if (details.url.match(/\/angular\.js$/) || details.url.match(/\/angular\.min\.js$/)) {
     chrome.pageAction.show(details.tabId);
     if (details.url.indexOf('fromjbart') == -1 && tabIdsToMonitor[details.tabId]) {
@@ -9,6 +11,10 @@ chrome.webRequest.onBeforeRequest.addListener(function(details) {
       if (tabIdsToMonitor[details.tabId].inLocalHost) url += '&local=true';
         return { redirectUrl: url }
     }
+    // chrome.runtime.sendMessage(saveAppId, { op: 'save-app-installed' }, null, function(saveAppInstalled) {
+    //   if (saveAppInstalled)
+    //     chrome.tabs.executeScript(request.tabId,{ code: '$(\'<span id="can-save" />\').appendTo("body");' });
+    // });
   }
 },{ urls: ['*://*/*'] },["blocking"]);
 
@@ -50,13 +56,12 @@ function listenToSave(tabId) {
     chrome.tabs.executeScript(tabId,{ code: code }, function(saveContent) { 
       if (saveContent[0]) {
         var parts = saveContent[0].split("----JB-SEPARATOR----");
-        if (parts.length == 2) {
-          var prevValue = parts[0];
-          var value = parts[1];
+        if (parts.length == 3) {
+          var prevValue = parts[0], value = parts[1], template = parts[2];
           chrome.tabs.executeScript(tabId,{ code: 'document.querySelector("#jbn-save").innerHTML=""' }, function() {
             setTimeout(listen, 100);        
           });
-          save(tabId,prevValue,value);
+          save(tabId,prevValue,value,template);
           return;
         }
       }
@@ -65,13 +70,13 @@ function listenToSave(tabId) {
   }
 }
 
-function save(tabId,find,replace) {
-  var saveAppId = "alfephffdmnaceibnfknhcmnoeaeodjl";
-  chrome.runtime.sendMessage(saveAppId, { op: 'save', tabId: tabId, find:find, replace:replace });
+function save(tabId,find,replace,template) {
+  chrome.runtime.sendMessage(saveAppId, { op: 'save', tabId: tabId, find:find, replace:replace }, 
+    function response(response) {
+      if (response.op == 'saved')
+        chrome.tabs.executeScript(tabId,{ code: 'document.querySelector("#jbn-save-result").textContent = "' + response.message + '";' });
+      else if (response.op == 'error')
+        chrome.tabs.executeScript(tabId,{ code: 'alert("' + response.message + '")' });    
+  });
 }
 
-chrome.runtime.onMessageExternal.addListener(
-  function(request, sender, sendResponse) {
-    if (request && request.op == 'saved')
-      chrome.tabs.executeScript(request.tabId,{ code: 'alert("' + request.message + '")' });
-    });

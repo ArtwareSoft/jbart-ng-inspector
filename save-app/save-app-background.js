@@ -4,10 +4,14 @@ chrome.runtime.onMessageExternal.addListener(
   function(request, sender, sendResponse) {
   	if (request && request.op == 'save') {
       save(request.find, request.replace, function(result) {
-        var extensionId = 'lnnfleknfcmbgcjocclbbfbbojnpfndo';
-        chrome.runtime.sendMessage(extensionId, { op: 'saved', message: 'saved succesfully to ' + result.fileName, tabId: request.tabId } );
+        sendResponse({ op: 'saved', message: 'saved succesfully to ' + result.fileName });
+      }, function(error) {
+        sendResponse({ op: 'error', message: error });
       });
   	}
+    return true;
+    // else if (request && request.op == 'save-app-installed')
+    //   sendResponse(true);
   });
 
 chrome.runtime.onMessage.addListener(
@@ -20,15 +24,16 @@ chrome.app.runtime.onLaunched.addListener(function(launchData) {
   chrome.app.window.create('main.html', {id:"fileWin", innerBounds: {width: 300, height: 450}});
 });
 
-function save(find,replace,callback) {
+function save(find,replace,success,error) {
   chrome.storage.local.get('dir', function(storage) {
     if (storage && storage.dir) 
       chrome.fileSystem.restoreEntry(storage.dir, function(entry) {
-        searchInDir(entry, find, replace, callback);
+        searchInDir(entry, find, replace, success);
       });
     else {  // Dir never chosen
-      jbCurrentSave = { find:find, replace:replace, callback: callback };
-      chrome.app.window.create('choose-dir.html', {id:"fileWin", innerBounds: {width: 800, height: 500}});
+      error('Please choose dir before saving');
+      // jbCurrentSave = { find:find, replace:replace, callback: success };
+      // chrome.app.window.create('choose-dir.html', {id:"fileWin", innerBounds: {width: 800, height: 500}});
     }
   });  
 }
